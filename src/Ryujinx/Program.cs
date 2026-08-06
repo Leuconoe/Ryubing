@@ -260,8 +260,19 @@ namespace Ryujinx.Ava
         {
             if (_controlBridge is not null)
             {
-                _controlBridge.Start();
-                Logger.Notice.Print(LogClass.Application, "Control bridge listening on the configured loopback port.");
+                try
+                {
+                    _controlBridge.Start();
+                    Logger.Notice.Print(LogClass.Application, "Control bridge listening on the configured loopback port.");
+                }
+                catch (Exception exception)
+                {
+                    Logger.Error?.Print(LogClass.Application,
+                        $"Control bridge could not start and has been disabled: {exception.Message}");
+                    Logger.RemoveTarget(_controlBridge.LogTarget.Name);
+                    _controlBridge.Dispose();
+                    _controlBridge = null;
+                }
             }
         }
 
