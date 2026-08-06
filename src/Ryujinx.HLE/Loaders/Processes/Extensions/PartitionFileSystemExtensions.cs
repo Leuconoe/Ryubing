@@ -52,7 +52,7 @@ namespace Ryujinx.HLE.Loaders.Processes.Extensions
             return programs;
         }
 
-        internal static (bool, ProcessResult) TryLoad<TMetaData, TFormat, THeader, TEntry>(this PartitionFileSystemCore<TMetaData, TFormat, THeader, TEntry> partitionFileSystem, Switch device, string path, ulong applicationId, out string errorMessage)
+        internal static (bool, ProcessResult) TryLoad<TMetaData, TFormat, THeader, TEntry>(this PartitionFileSystemCore<TMetaData, TFormat, THeader, TEntry> partitionFileSystem, Switch device, string path, ulong applicationId, out string errorMessage, string sessionUpdatePath = null)
             where TMetaData : PartitionFileSystemMetaCore<TFormat, THeader, TEntry>, new()
             where TFormat : IPartitionFileSystemFormat
             where THeader : unmanaged, IPartitionFileSystemHeader
@@ -102,7 +102,18 @@ namespace Ryujinx.HLE.Loaders.Processes.Extensions
                     return (false, ProcessResult.Failed);
                 }
 
-                (Nca updatePatchNca, Nca updateControlNca) = mainNca.GetUpdateData(device.FileSystem, device.System.FsIntegrityCheckLevel, device.Configuration.UserChannelPersistence.Index, out string updatePath);
+                Nca updatePatchNca;
+                Nca updateControlNca;
+                string updatePath;
+                try
+                {
+                    (updatePatchNca, updateControlNca) = mainNca.GetUpdateData(device.FileSystem, device.System.FsIntegrityCheckLevel, device.Configuration.UserChannelPersistence.Index, out updatePath, sessionUpdatePath);
+                }
+                catch (Exception exception)
+                {
+                    errorMessage = $"Unable to load update: {exception.Message}";
+                    return (false, ProcessResult.Failed);
+                }
 
                 if (updatePatchNca != null)
                 {

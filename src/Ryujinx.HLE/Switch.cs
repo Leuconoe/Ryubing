@@ -157,9 +157,9 @@ namespace Ryujinx.HLE
         }
 
         public bool LoadCart(string exeFsDir, string romFsFile = null) => Processes.LoadUnpackedNca(exeFsDir, romFsFile);
-        public bool LoadXci(string xciFile, ulong applicationId = 0) => Processes.LoadXci(xciFile, applicationId);
+        public bool LoadXci(string xciFile, ulong applicationId = 0, string updatePath = null) => Processes.LoadXci(xciFile, applicationId, updatePath);
         public bool LoadNca(string ncaFile, BlitStruct<ApplicationControlProperty>? customNacpData = null) => Processes.LoadNca(ncaFile, customNacpData);
-        public bool LoadNsp(string nspFile, ulong applicationId = 0) => Processes.LoadNsp(nspFile, applicationId);
+        public bool LoadNsp(string nspFile, ulong applicationId = 0, string updatePath = null) => Processes.LoadNsp(nspFile, applicationId, updatePath);
         public bool LoadProgram(string fileName) => Processes.LoadNxo(fileName);
 
         public void SetVolume(float volume) => AudioDeviceDriver.Volume = Math.Clamp(volume, 0f, 1f);

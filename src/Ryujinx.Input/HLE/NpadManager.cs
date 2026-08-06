@@ -44,6 +44,16 @@ namespace Ryujinx.Input.HLE
         
         private readonly List<GamepadInput> _hleInputStates = [];
         private readonly List<SixAxisInput> _hleMotionStates = new(NpadDevices.MaxControllers);
+        private readonly Dictionary<PlayerIndex, int[]> _injectedButtonCounts = [];
+        private readonly Dictionary<PlayerIndex, InjectedStickState> _injectedSticks = [];
+        private long _injectedStickGeneration;
+
+        private sealed class InjectedStickState
+        {
+            public JoystickPosition? Left { get; set; }
+            public JoystickPosition? Right { get; set; }
+            public long Generation { get; set; }
+        }
 
         public NpadManager(IGamepadDriver keyboardDriver, IGamepadDriver gamepadDriver, IGamepadDriver mouseDriver)
         {
@@ -410,8 +420,6 @@ namespace Ryujinx.Input.HLE
 
                         inputState = controller.GetHLEInputState();
 
-                        inputState.Buttons |= _device.Hid.UpdateStickButtons(inputState.LStick, inputState.RStick);
-
                         isJoyconPair = inputConfig.ControllerType == ControllerType.JoyconPair;
 
                         SixAxisInput altMotionState = isJoyconPair ? controller.GetHLEMotionState(true) : default;
@@ -425,6 +433,9 @@ namespace Ryujinx.Input.HLE
                     }
 
                     inputState.PlayerId = playerIndex;
+                    ApplyInjectedSticks(playerIndex, ref inputState);
+                    inputState.Buttons |= _device.Hid.UpdateStickButtons(inputState.LStick, inputState.RStick);
+                    inputState.Buttons |= GetInjectedButtons(playerIndex);
                     motionState.Item1.PlayerId = playerIndex;
 
                     _hleInputStates.Add(inputState);
@@ -498,6 +509,149 @@ namespace Ryujinx.Input.HLE
                 _device.TamperMachine.UpdateInput(_hleInputStates);
             }
         }
+
+        public void PressInjectedButtons(PlayerIndex playerIndex, ControllerKeys buttons)
+        {
+            lock (_lock)
+            {
+                if (!_injectedButtonCounts.TryGetValue(playerIndex, out int[] counts))
+                {
+                    counts = new int[28];
+                    _injectedButtonCounts.Add(playerIndex, counts);
+                }
+
+                for (int bit = 0; bit < counts.Length; bit++)
+                {
+                    if (((long)buttons & (1L << bit)) != 0)
+                    {
+                        counts[bit]++;
+                    }
+                }
+            }
+        }
+
+        public void ReleaseInjectedButtons(PlayerIndex playerIndex, ControllerKeys buttons)
+        {
+            lock (_lock)
+            {
+                if (!_injectedButtonCounts.TryGetValue(playerIndex, out int[] counts))
+                {
+                    return;
+                }
+
+                for (int bit = 0; bit < counts.Length; bit++)
+                {
+                    if (((long)buttons & (1L << bit)) != 0 && counts[bit] > 0)
+                    {
+                        counts[bit]--;
+                    }
+                }
+
+                if (counts.All(count => count == 0))
+                {
+                    _injectedButtonCounts.Remove(playerIndex);
+                }
+            }
+        }
+
+        public void ClearInjectedButtons()
+        {
+            lock (_lock)
+            {
+                _injectedButtonCounts.Clear();
+            }
+        }
+
+        public long SetInjectedSticks(
+            PlayerIndex playerIndex,
+            float? leftX,
+            float? leftY,
+            float? rightX,
+            float? rightY)
+        {
+            lock (_lock)
+            {
+                if (!_injectedSticks.TryGetValue(playerIndex, out InjectedStickState state))
+                {
+                    state = new InjectedStickState();
+                    _injectedSticks.Add(playerIndex, state);
+                }
+
+                if (leftX.HasValue || leftY.HasValue)
+                {
+                    JoystickPosition current = state.Left ?? default;
+                    state.Left = new JoystickPosition
+                    {
+                        Dx = leftX.HasValue ? ToStickAxis(leftX.Value) : current.Dx,
+                        Dy = leftY.HasValue ? ToStickAxis(leftY.Value) : current.Dy,
+                    };
+                }
+
+                if (rightX.HasValue || rightY.HasValue)
+                {
+                    JoystickPosition current = state.Right ?? default;
+                    state.Right = new JoystickPosition
+                    {
+                        Dx = rightX.HasValue ? ToStickAxis(rightX.Value) : current.Dx,
+                        Dy = rightY.HasValue ? ToStickAxis(rightY.Value) : current.Dy,
+                    };
+                }
+
+                state.Generation = ++_injectedStickGeneration;
+                return state.Generation;
+            }
+        }
+
+        public void ClearInjectedSticks(PlayerIndex playerIndex, long generation)
+        {
+            lock (_lock)
+            {
+                if (_injectedSticks.TryGetValue(playerIndex, out InjectedStickState state) && state.Generation == generation)
+                {
+                    _injectedSticks.Remove(playerIndex);
+                }
+            }
+        }
+
+        public void ClearInjectedInputs()
+        {
+            lock (_lock)
+            {
+                _injectedButtonCounts.Clear();
+                _injectedSticks.Clear();
+            }
+        }
+
+        private ControllerKeys GetInjectedButtons(PlayerIndex playerIndex)
+        {
+            if (!_injectedButtonCounts.TryGetValue(playerIndex, out int[] counts))
+            {
+                return 0;
+            }
+
+            long buttons = 0;
+            for (int bit = 0; bit < counts.Length; bit++)
+            {
+                if (counts[bit] > 0)
+                {
+                    buttons |= 1L << bit;
+                }
+            }
+
+            return (ControllerKeys)buttons;
+        }
+
+        private void ApplyInjectedSticks(PlayerIndex playerIndex, ref GamepadInput inputState)
+        {
+            if (_injectedSticks.TryGetValue(playerIndex, out InjectedStickState state))
+            {
+                inputState.LStick = state.Left ?? inputState.LStick;
+                inputState.RStick = state.Right ?? inputState.RStick;
+            }
+        }
+
+        private static short ToStickAxis(float value) =>
+            (short)Math.Clamp((int)Math.Round(value * short.MaxValue), short.MinValue, short.MaxValue);
 
         public InputConfig GetPlayerInputConfigByIndex(int index)
         {

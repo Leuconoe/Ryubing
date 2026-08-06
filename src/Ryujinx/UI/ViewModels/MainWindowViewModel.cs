@@ -1881,7 +1881,7 @@ namespace Ryujinx.Ava.UI.ViewModels
         }
 
         public async Task LoadApplication(ApplicationData application, bool startFullscreen = false,
-            BlitStruct<ApplicationControlProperty>? customNacpData = null)
+            BlitStruct<ApplicationControlProperty>? customNacpData = null, string sessionUpdatePath = null)
         {
             if (InitializeUserConfig(application))
                 return;
@@ -1917,7 +1917,8 @@ namespace Ryujinx.Ava.UI.ViewModels
                 AccountManager,
                 UserChannelPersistence,
                 this,
-                TopLevel);
+                TopLevel,
+                sessionUpdatePath);
             
             CancellationTokenSource cts = new CancellationTokenSource();
 

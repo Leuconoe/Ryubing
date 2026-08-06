@@ -6,6 +6,7 @@ using Projektanker.Icons.Avalonia;
 using Projektanker.Icons.Avalonia.FontAwesome;
 using Projektanker.Icons.Avalonia.MaterialDesign;
 using Ryujinx.Ava.Systems;
+using Ryujinx.Ava.Systems.Control;
 using Ryujinx.Ava.Systems.Configuration;
 using Ryujinx.Ava.Systems.Configuration.System;
 using Ryujinx.Ava.UI.Helpers;
@@ -43,6 +44,7 @@ namespace Ryujinx.Ava
         public static bool UseHardwareAcceleration { get; private set; }
         public static string BackendThreadingArg { get; private set; }
         public static bool CoreDumpArg { get; private set; }
+        private static ControlBridgeServer _controlBridge;
 
         private const uint MbIconwarning = 0x30;
 
@@ -164,6 +166,8 @@ namespace Ryujinx.Ava
 
             bool noGuiArg = ConsumeCommandLineArgument(ref args, "--no-gui") || ConsumeCommandLineArgument(ref args, "nogui");
             bool coreDumpArg = ConsumeCommandLineArgument(ref args, "--core-dumps");
+            string controlPortArg = ConsumeCommandLineOption(ref args, "--control-port");
+            string controlTokenFileArg = ConsumeCommandLineOption(ref args, "--control-token-file");
 
             CoreDumpArg = coreDumpArg;
 
@@ -182,6 +186,37 @@ namespace Ryujinx.Ava
             {
                 HeadlessRyujinx.Entrypoint(args);
                 return 0;
+            }
+
+            if (controlPortArg is not null)
+            {
+                if (!int.TryParse(controlPortArg, out int controlPort) || controlPort is < 1 or > 65535)
+                {
+                    Console.Error.WriteLine("--control-port must be an integer between 1 and 65535.");
+                    return 1;
+                }
+
+                string controlToken = Environment.GetEnvironmentVariable("RYUBING_CONTROL_TOKEN");
+                if (controlTokenFileArg is not null)
+                {
+                    try
+                    {
+                        controlToken = File.ReadAllText(controlTokenFileArg).Trim();
+                        File.Delete(controlTokenFileArg);
+                    }
+                    catch (Exception exception)
+                    {
+                        Console.Error.WriteLine($"Could not read --control-token-file: {exception.Message}");
+                        return 1;
+                    }
+                }
+                if (string.IsNullOrWhiteSpace(controlToken))
+                {
+                    Console.Error.WriteLine("RYUBING_CONTROL_TOKEN or --control-token-file is required when --control-port is used.");
+                    return 1;
+                }
+
+                _controlBridge = new ControlBridgeServer(controlPort, controlToken);
             }
 
             Initialize(args);
@@ -221,12 +256,42 @@ namespace Ryujinx.Ava
                         : [Win32RenderingMode.Software]
                 });
 
+        internal static void StartControlBridge()
+        {
+            if (_controlBridge is not null)
+            {
+                _controlBridge.Start();
+                Logger.Notice.Print(LogClass.Application, "Control bridge listening on the configured loopback port.");
+            }
+        }
+
         private static bool ConsumeCommandLineArgument(ref string[] args, string targetArgument)
         {
             List<string> argList = [.. args];
             bool found = argList.Remove(targetArgument);
             args = argList.ToArray();
             return found;
+        }
+
+        private static string ConsumeCommandLineOption(ref string[] args, string targetArgument)
+        {
+            List<string> argList = [.. args];
+            int index = argList.IndexOf(targetArgument);
+            if (index < 0)
+            {
+                return null;
+            }
+
+            if (index + 1 >= argList.Count)
+            {
+                args = argList.ToArray();
+                return string.Empty;
+            }
+
+            string value = argList[index + 1];
+            argList.RemoveRange(index, 2);
+            args = argList.ToArray();
+            return value;
         }
 
         private static void Initialize(string[] args)
@@ -245,7 +310,18 @@ namespace Ryujinx.Ava
             // Delete backup files after updating.
             Task.Run(Updater.CleanupUpdate);
 
-            Console.Title = $"{RyujinxApp.FullAppName} Console {Version}";
+            try
+            {
+                Console.Title = $"{RyujinxApp.FullAppName} Console {Version}";
+            }
+            catch (IOException)
+            {
+                // GUI/automation launches may not have a valid console handle.
+            }
+            catch (PlatformNotSupportedException)
+            {
+                // Some window-system hosts do not expose a console title.
+            }
 
             // Hook unhandled exception and process exit events.
             AppDomain.CurrentDomain.UnhandledException += (sender, e)
@@ -262,6 +338,11 @@ namespace Ryujinx.Ava
 
             // Initialize the logger system.
             LoggerModule.Initialize();
+
+            if (_controlBridge is not null)
+            {
+                Logger.AddTarget(_controlBridge.LogTarget);
+            }
 
             // Initialize Discord integration.
             DiscordIntegrationModule.Initialize();
@@ -492,6 +573,13 @@ namespace Ryujinx.Ava
         internal static void Exit()
         {
             DiscordIntegrationModule.Exit();
+
+            if (_controlBridge is not null)
+            {
+                Logger.RemoveTarget(_controlBridge.LogTarget.Name);
+                _controlBridge.Dispose();
+                _controlBridge = null;
+            }
 
             Logger.Shutdown();
         }
