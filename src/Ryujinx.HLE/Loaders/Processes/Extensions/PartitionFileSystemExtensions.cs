@@ -64,6 +64,7 @@ namespace Ryujinx.HLE.Loaders.Processes.Extensions
             Nca mainNca = null;
             Nca patchNca = null;
             Nca controlNca = null;
+            ContentMetaData applicationContent = null;
 
             try
             {
@@ -73,6 +74,7 @@ namespace Ryujinx.HLE.Loaders.Processes.Extensions
                 {
                     foreach ((ulong _, ContentMetaData content) in applications)
                     {
+                        applicationContent = content;
                         mainNca = content.GetNcaByType(device.FileSystem.KeySet, ContentType.Program, device.Configuration.UserChannelPersistence.Index);
                         controlNca = content.GetNcaByType(device.FileSystem.KeySet, ContentType.Control, device.Configuration.UserChannelPersistence.Index);
                         break;
@@ -80,11 +82,31 @@ namespace Ryujinx.HLE.Loaders.Processes.Extensions
                 }
                 else if (applications.TryGetValue(applicationId, out ContentMetaData content))
                 {
+                    applicationContent = content;
                     mainNca = content.GetNcaByType(device.FileSystem.KeySet, ContentType.Program, device.Configuration.UserChannelPersistence.Index);
                     controlNca = content.GetNcaByType(device.FileSystem.KeySet, ContentType.Control, device.Configuration.UserChannelPersistence.Index);
                 }
 
                 ProcessLoaderHelper.RegisterProgramMapInfo(device, partitionFileSystem).ThrowIfFailure();
+
+                if (applicationContent != null)
+                {
+                    for (int programIndex = 0; programIndex < 0x10; programIndex++)
+                    {
+                        Nca programNca = applicationContent.GetNcaByType(device.FileSystem.KeySet, ContentType.Program, programIndex);
+                        if (programNca == null)
+                        {
+                            continue;
+                        }
+
+                        IStorage programRomFs = programNca.GetRomFs(device);
+                        if (programRomFs != null)
+                        {
+                            ulong programId = programNca.ProgramIdBase + (uint)programNca.ProgramIndex;
+                            device.FileSystem.SetProgramRomFs(programId, programRomFs.AsStream(FileAccess.Read));
+                        }
+                    }
+                }
             }
             catch (Exception ex)
             {

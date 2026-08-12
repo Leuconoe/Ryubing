@@ -403,6 +403,10 @@ namespace Ryujinx.Ava.Systems.Control
             {
                 throw new ArgumentException("quality must be between 1 and 100");
             }
+            if (!appHost.IsControlScreenshotReady)
+            {
+                throw new ControlBridgeException(-32002, "Renderer frame is not ready for capture");
+            }
 
             await Dispatcher.UIThread.InvokeAsync(() =>
             {
@@ -427,6 +431,10 @@ namespace Ryujinx.Ava.Systems.Control
             catch (OperationCanceledException)
             {
                 throw new ControlBridgeException(-32007, "Screenshot capture timed out");
+            }
+            catch (InvalidOperationException exception)
+            {
+                throw new ControlBridgeException(-32002, exception.Message);
             }
 
             if (capture.Data.Length == 0 || capture.Width <= 0 || capture.Height <= 0)

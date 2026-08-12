@@ -10,6 +10,7 @@ namespace Ryujinx.Common
         private readonly CancellationTokenSource _cts;
         private readonly Action<T> _workerAction;
         private readonly BlockingCollection<T> _queue;
+        private int _disposed;
 
         public bool IsCancellationRequested => _cts.IsCancellationRequested;
 
@@ -91,6 +92,11 @@ namespace Ryujinx.Common
 
         public void Dispose()
         {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
             _queue.CompleteAdding();
             _cts.Cancel();
             _workerThread.Join();

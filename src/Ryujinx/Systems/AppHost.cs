@@ -147,6 +147,7 @@ namespace Ryujinx.Ava.Systems
         public ulong ApplicationId { get; private set; }
         public string SessionUpdatePath { get; }
         public bool ScreenshotRequested { get; set; }
+        public bool IsControlScreenshotReady => !_isStopped && Width > 0 && Height > 0 && _renderer?.Window is not null;
 
         public AppHost(
             RendererHost renderer,
@@ -484,6 +485,11 @@ namespace Ryujinx.Ava.Systems
 
         public async Task<ScreenCaptureImageInfo> CaptureControlScreenshot(CancellationToken cancellationToken)
         {
+            if (!IsControlScreenshotReady)
+            {
+                throw new InvalidOperationException("Renderer frame is not ready for capture.");
+            }
+
             TaskCompletionSource<ScreenCaptureImageInfo> completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
             lock (_controlScreenshotLock)
@@ -1523,7 +1529,7 @@ namespace Ryujinx.Ava.Systems
 
                 _prevHotkeyState = currentHotkeyState;
 
-                if (ScreenshotRequested)
+                if (ScreenshotRequested && _renderer?.Window is not null)
                 {
                     ScreenshotRequested = false;
                     _renderer.Screenshot();

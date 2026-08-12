@@ -37,6 +37,7 @@ namespace Ryujinx.HLE.FileSystem
         public ModLoader ModLoader { get; private set; }
 
         private readonly ConcurrentDictionary<ulong, Stream> _romFsByPid;
+        private readonly ConcurrentDictionary<ulong, Stream> _romFsByProgramId;
 
         private static bool _isInitialized = false;
 
@@ -57,6 +58,7 @@ namespace Ryujinx.HLE.FileSystem
             ReloadKeySet();
             ModLoader = new ModLoader(); // Should only be created once
             _romFsByPid = new ConcurrentDictionary<ulong, Stream>();
+            _romFsByProgramId = new ConcurrentDictionary<ulong, Stream>();
         }
 
         public void LoadRomFs(ulong pid, string fileName)
@@ -84,6 +86,21 @@ namespace Ryujinx.HLE.FileSystem
         public Stream GetRomFs(ulong pid)
         {
             return _romFsByPid[pid];
+        }
+
+        public void SetProgramRomFs(ulong programId, Stream romfsStream)
+        {
+            _romFsByProgramId.AddOrUpdate(programId, romfsStream, (programId, oldStream) =>
+            {
+                oldStream.Close();
+
+                return romfsStream;
+            });
+        }
+
+        public bool TryGetProgramRomFs(ulong programId, out Stream romfsStream)
+        {
+            return _romFsByProgramId.TryGetValue(programId, out romfsStream);
         }
 
         public static string GetFullPath(string basePath, string fileName)
@@ -671,6 +688,13 @@ namespace Ryujinx.HLE.FileSystem
                 }
 
                 _romFsByPid.Clear();
+
+                foreach (Stream stream in _romFsByProgramId.Values)
+                {
+                    stream.Close();
+                }
+
+                _romFsByProgramId.Clear();
             }
         }
     }
