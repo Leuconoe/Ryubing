@@ -37,6 +37,8 @@ using Ryujinx.Graphics.OpenGL;
 using Ryujinx.Graphics.Vulkan;
 using Ryujinx.HLE.FileSystem;
 using Ryujinx.HLE.HOS;
+using Ryujinx.HLE.HOS.Services.Hid;
+using Ryujinx.HLE.HOS.Services.Hid.Types.SharedMemory.TouchScreen;
 using Ryujinx.HLE.HOS.Services.Account.Acc;
 using Ryujinx.Input;
 using Ryujinx.Input.HLE;
@@ -125,6 +127,10 @@ namespace Ryujinx.Ava.Systems
         private readonly bool _isFirmwareTitle;
 
         private readonly Lock _lockObject = new();
+        private readonly Lock _controlTouchLock = new();
+        private readonly Lock _controlScreenshotLock = new();
+        private TouchPoint? _controlTouchPoint;
+        private TaskCompletionSource<ScreenCaptureImageInfo> _controlScreenshot;
 
         public event EventHandler AppExit;
         public event EventHandler<StatusUpdatedEventArgs> StatusUpdatedEvent;
@@ -139,7 +145,9 @@ namespace Ryujinx.Ava.Systems
         public int Height { get; private set; }
         public string ApplicationPath { get; private set; }
         public ulong ApplicationId { get; private set; }
+        public string SessionUpdatePath { get; }
         public bool ScreenshotRequested { get; set; }
+        public bool IsControlScreenshotReady => !_isStopped && Width > 0 && Height > 0 && _renderer?.Window is not null;
 
         public AppHost(
             RendererHost renderer,
@@ -151,7 +159,8 @@ namespace Ryujinx.Ava.Systems
             AccountManager accountManager,
             UserChannelPersistence userChannelPersistence,
             MainWindowViewModel viewmodel,
-            TopLevel topLevel)
+            TopLevel topLevel,
+            string sessionUpdatePath = null)
         {
             _viewModel = viewmodel;
             _inputManager = inputManager;
@@ -170,6 +179,7 @@ namespace Ryujinx.Ava.Systems
             TouchScreenManager = _inputManager.CreateTouchScreenManager();
             ApplicationPath = applicationPath;
             ApplicationId = applicationId;
+            SessionUpdatePath = sessionUpdatePath;
             VirtualFileSystem = virtualFileSystem;
             ContentManager = contentManager;
 
@@ -392,6 +402,22 @@ namespace Ryujinx.Ava.Systems
 
         private void Renderer_ScreenCaptured(object sender, ScreenCaptureImageInfo e)
         {
+            TaskCompletionSource<ScreenCaptureImageInfo> controlScreenshot = null;
+            lock (_controlScreenshotLock)
+            {
+                if (_controlScreenshot is not null)
+                {
+                    controlScreenshot = _controlScreenshot;
+                    _controlScreenshot = null;
+                }
+            }
+
+            if (controlScreenshot is not null)
+            {
+                controlScreenshot.TrySetResult(e);
+                return;
+            }
+
             if (e.Data.Length > 0 && e.Height > 0 && e.Width > 0)
             {
                 Task.Run(() =>
@@ -455,6 +481,74 @@ namespace Ryujinx.Ava.Systems
             using FileStream stream = File.OpenWrite(path);
 
             data.SaveTo(stream);
+        }
+
+        public async Task<ScreenCaptureImageInfo> CaptureControlScreenshot(CancellationToken cancellationToken)
+        {
+            if (!IsControlScreenshotReady)
+            {
+                throw new InvalidOperationException("Renderer frame is not ready for capture.");
+            }
+
+            TaskCompletionSource<ScreenCaptureImageInfo> completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            lock (_controlScreenshotLock)
+            {
+                if (_controlScreenshot is not null)
+                {
+                    throw new InvalidOperationException("A control screenshot is already pending.");
+                }
+
+                _controlScreenshot = completion;
+            }
+
+            ScreenshotRequested = true;
+
+            try
+            {
+                return await completion.Task.WaitAsync(cancellationToken);
+            }
+            finally
+            {
+                lock (_controlScreenshotLock)
+                {
+                    if (ReferenceEquals(_controlScreenshot, completion))
+                    {
+                        _controlScreenshot = null;
+                    }
+                }
+            }
+        }
+
+        public void SetControlTouch(TouchPoint point)
+        {
+            lock (_controlTouchLock)
+            {
+                _controlTouchPoint = point;
+            }
+        }
+
+        public void ClearControlTouch()
+        {
+            lock (_controlTouchLock)
+            {
+                _controlTouchPoint = null;
+            }
+        }
+
+        private bool TryGetControlTouch(out TouchPoint point)
+        {
+            lock (_controlTouchLock)
+            {
+                if (_controlTouchPoint.HasValue)
+                {
+                    point = _controlTouchPoint.Value;
+                    return true;
+                }
+
+                point = default;
+                return false;
+            }
         }
 
         public void Start()
@@ -647,6 +741,9 @@ namespace Ryujinx.Ava.Systems
         // MUST be public to inherit from IDisposable
         public void Dispose()
         {
+            NpadManager.ClearInjectedInputs();
+            ClearControlTouch();
+
             if (Device.Processes != null)
             {
                 MainWindowViewModel.UpdateGameMetadata(Device.Processes.ActiveApplication?.ProgramIdText, 
@@ -847,7 +944,7 @@ namespace Ryujinx.Ava.Systems
                         {
                             Logger.Info?.Print(LogClass.Application, "Loading as XCI.");
 
-                            if (!Device.LoadXci(ApplicationPath, ApplicationId))
+                            if (!Device.LoadXci(ApplicationPath, ApplicationId, SessionUpdatePath))
                             {
                                 Device.Dispose();
 
@@ -876,7 +973,7 @@ namespace Ryujinx.Ava.Systems
                         {
                             Logger.Info?.Print(LogClass.Application, "Loading as NSP.");
 
-                            if (!Device.LoadNsp(ApplicationPath, ApplicationId))
+                            if (!Device.LoadNsp(ApplicationPath, ApplicationId, SessionUpdatePath))
                             {
                                 Device.Dispose();
 
@@ -1432,7 +1529,7 @@ namespace Ryujinx.Ava.Systems
 
                 _prevHotkeyState = currentHotkeyState;
 
-                if (ScreenshotRequested)
+                if (ScreenshotRequested && _renderer?.Window is not null)
                 {
                     ScreenshotRequested = false;
                     _renderer.Screenshot();
@@ -1442,7 +1539,12 @@ namespace Ryujinx.Ava.Systems
             // Touchscreen.
             bool hasTouch = false;
 
-            if (_viewModel.IsActive && !ConfigurationState.Instance.Hid.EnableMouse.Value)
+            if (TryGetControlTouch(out TouchPoint controlTouch))
+            {
+                Device.Hid.Touchscreen.Update(controlTouch);
+                hasTouch = true;
+            }
+            else if (_viewModel.IsActive && !ConfigurationState.Instance.Hid.EnableMouse.Value)
             {
                 hasTouch = TouchScreenManager.Update(true, (_inputManager.MouseDriver as AvaloniaMouseDriver).IsButtonPressed(MouseButton.Button1), ConfigurationState.Instance.Graphics.AspectRatio.Value.ToFloat());
             }

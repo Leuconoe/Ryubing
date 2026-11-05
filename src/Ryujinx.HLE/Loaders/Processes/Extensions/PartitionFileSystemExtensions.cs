@@ -52,7 +52,7 @@ namespace Ryujinx.HLE.Loaders.Processes.Extensions
             return programs;
         }
 
-        internal static (bool, ProcessResult) TryLoad<TMetaData, TFormat, THeader, TEntry>(this PartitionFileSystemCore<TMetaData, TFormat, THeader, TEntry> partitionFileSystem, Switch device, string path, ulong applicationId, out string errorMessage)
+        internal static (bool, ProcessResult) TryLoad<TMetaData, TFormat, THeader, TEntry>(this PartitionFileSystemCore<TMetaData, TFormat, THeader, TEntry> partitionFileSystem, Switch device, string path, ulong applicationId, out string errorMessage, string sessionUpdatePath = null)
             where TMetaData : PartitionFileSystemMetaCore<TFormat, THeader, TEntry>, new()
             where TFormat : IPartitionFileSystemFormat
             where THeader : unmanaged, IPartitionFileSystemHeader
@@ -64,6 +64,7 @@ namespace Ryujinx.HLE.Loaders.Processes.Extensions
             Nca mainNca = null;
             Nca patchNca = null;
             Nca controlNca = null;
+            ContentMetaData applicationContent = null;
 
             try
             {
@@ -73,6 +74,7 @@ namespace Ryujinx.HLE.Loaders.Processes.Extensions
                 {
                     foreach ((ulong _, ContentMetaData content) in applications)
                     {
+                        applicationContent = content;
                         mainNca = content.GetNcaByType(device.FileSystem.KeySet, ContentType.Program, device.Configuration.UserChannelPersistence.Index);
                         controlNca = content.GetNcaByType(device.FileSystem.KeySet, ContentType.Control, device.Configuration.UserChannelPersistence.Index);
                         break;
@@ -80,11 +82,31 @@ namespace Ryujinx.HLE.Loaders.Processes.Extensions
                 }
                 else if (applications.TryGetValue(applicationId, out ContentMetaData content))
                 {
+                    applicationContent = content;
                     mainNca = content.GetNcaByType(device.FileSystem.KeySet, ContentType.Program, device.Configuration.UserChannelPersistence.Index);
                     controlNca = content.GetNcaByType(device.FileSystem.KeySet, ContentType.Control, device.Configuration.UserChannelPersistence.Index);
                 }
 
                 ProcessLoaderHelper.RegisterProgramMapInfo(device, partitionFileSystem).ThrowIfFailure();
+
+                if (applicationContent != null)
+                {
+                    for (int programIndex = 0; programIndex < 0x10; programIndex++)
+                    {
+                        Nca programNca = applicationContent.GetNcaByType(device.FileSystem.KeySet, ContentType.Program, programIndex);
+                        if (programNca == null)
+                        {
+                            continue;
+                        }
+
+                        IStorage programRomFs = programNca.GetRomFs(device);
+                        if (programRomFs != null)
+                        {
+                            ulong programId = programNca.ProgramIdBase + (uint)programNca.ProgramIndex;
+                            device.FileSystem.SetProgramRomFs(programId, programRomFs.AsStream(FileAccess.Read));
+                        }
+                    }
+                }
             }
             catch (Exception ex)
             {
@@ -102,7 +124,18 @@ namespace Ryujinx.HLE.Loaders.Processes.Extensions
                     return (false, ProcessResult.Failed);
                 }
 
-                (Nca updatePatchNca, Nca updateControlNca) = mainNca.GetUpdateData(device.FileSystem, device.System.FsIntegrityCheckLevel, device.Configuration.UserChannelPersistence.Index, out string updatePath);
+                Nca updatePatchNca;
+                Nca updateControlNca;
+                string updatePath;
+                try
+                {
+                    (updatePatchNca, updateControlNca) = mainNca.GetUpdateData(device.FileSystem, device.System.FsIntegrityCheckLevel, device.Configuration.UserChannelPersistence.Index, out updatePath, sessionUpdatePath);
+                }
+                catch (Exception exception)
+                {
+                    errorMessage = $"Unable to load update: {exception.Message}";
+                    return (false, ProcessResult.Failed);
+                }
 
                 if (updatePatchNca != null)
                 {

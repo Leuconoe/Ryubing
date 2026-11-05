@@ -82,6 +82,8 @@ namespace Ryujinx.Ava
 
                 ConfigurationState.Instance.UI.BaseStyle.Event += ThemeChanged_Event;
             }
+
+            Program.StartControlBridge();
         }
 
         private void ShowRestartDialog()

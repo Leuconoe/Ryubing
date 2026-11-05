@@ -99,7 +99,7 @@ namespace Ryujinx.HLE.Loaders.Processes.Extensions
             return processResult;
         }
 
-        public static (Nca, Nca) GetUpdateData(this Nca mainNca, VirtualFileSystem fileSystem, IntegrityCheckLevel checkLevel, int programIndex, out string updatePath)
+        public static (Nca, Nca) GetUpdateData(this Nca mainNca, VirtualFileSystem fileSystem, IntegrityCheckLevel checkLevel, int programIndex, out string updatePath, string sessionUpdatePath = null)
         {
             updatePath = null;
 
@@ -110,27 +110,42 @@ namespace Ryujinx.HLE.Loaders.Processes.Extensions
             // Clear the program index part.
             ulong titleIdBase = mainNca.ProgramIdBase;
 
-            // Load update information if exists.
-            string titleUpdateMetadataPath = Path.Combine(AppDataManager.GamesDirPath, titleIdBase.ToString("x16"), "updates.json");
-            if (File.Exists(titleUpdateMetadataPath))
+            // Prefer a process-local update supplied for this launch. Unlike updates.json,
+            // this never mutates the user's persistent title configuration.
+            bool isSessionOverride = !string.IsNullOrWhiteSpace(sessionUpdatePath);
+            if (isSessionOverride)
             {
-                updatePath = JsonHelper.DeserializeFromFile(titleUpdateMetadataPath, _applicationSerializerContext.TitleUpdateMetadata).Selected;
-                if (File.Exists(updatePath))
+                updatePath = sessionUpdatePath;
+            }
+            else
+            {
+                string titleUpdateMetadataPath = Path.Combine(AppDataManager.GamesDirPath, titleIdBase.ToString("x16"), "updates.json");
+                if (File.Exists(titleUpdateMetadataPath))
                 {
-                    IFileSystem updatePartitionFileSystem = PartitionFileSystemUtils.OpenApplicationFileSystem(updatePath, fileSystem);
-
-                    foreach ((ulong applicationTitleId, ContentMetaData content) in updatePartitionFileSystem.GetContentData(ContentMetaType.Patch, fileSystem, checkLevel))
-                    {
-                        if ((applicationTitleId & ~0x1FFFUL) != titleIdBase)
-                        {
-                            continue;
-                        }
-
-                        updatePatchNca = content.GetNcaByType(fileSystem.KeySet, ContentType.Program, programIndex);
-                        updateControlNca = content.GetNcaByType(fileSystem.KeySet, ContentType.Control, programIndex);
-                        break;
-                    }
+                    updatePath = JsonHelper.DeserializeFromFile(titleUpdateMetadataPath, _applicationSerializerContext.TitleUpdateMetadata).Selected;
                 }
+            }
+
+            if (!string.IsNullOrWhiteSpace(updatePath) && File.Exists(updatePath))
+            {
+                IFileSystem updatePartitionFileSystem = PartitionFileSystemUtils.OpenApplicationFileSystem(updatePath, fileSystem);
+
+                foreach ((ulong applicationTitleId, ContentMetaData content) in updatePartitionFileSystem.GetContentData(ContentMetaType.Patch, fileSystem, checkLevel))
+                {
+                    if ((applicationTitleId & ~0x1FFFUL) != titleIdBase)
+                    {
+                        continue;
+                    }
+
+                    updatePatchNca = content.GetNcaByType(fileSystem.KeySet, ContentType.Program, programIndex);
+                    updateControlNca = content.GetNcaByType(fileSystem.KeySet, ContentType.Control, programIndex);
+                    break;
+                }
+            }
+
+            if (isSessionOverride && updatePatchNca is null)
+            {
+                throw new InvalidDataException($"The session update does not match base title {titleIdBase:x16}: {updatePath}");
             }
 
             return (updatePatchNca, updateControlNca);

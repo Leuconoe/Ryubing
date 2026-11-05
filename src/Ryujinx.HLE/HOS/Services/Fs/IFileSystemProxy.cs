@@ -13,6 +13,7 @@ using LibHac.Tools.FsSystem.NcaUtils;
 using Ryujinx.Common;
 using Ryujinx.Common.Logging;
 using Ryujinx.HLE.HOS.Services.Fs.FileSystemProxy;
+using Ryujinx.HLE.Loaders.Processes;
 using Ryujinx.Memory;
 using System;
 using System.IO;
@@ -884,13 +885,34 @@ namespace Ryujinx.HLE.HOS.Services.Fs
         public ResultCode OpenDataStorageWithProgramIndex(ServiceCtx context)
         {
             byte programIndex = context.RequestData.ReadByte();
+            ProcessResult process = context.Device.Processes.GetProcess(_pid);
+            LibHac.Fs.IStorage storage;
 
-            if (context.Device.Processes.GetProcess(_pid).Identity.ProgramIndex != programIndex)
+            if (process.Identity.ProgramIndex == programIndex)
             {
-                throw new NotImplementedException($"Accessing storage from other programs is not supported (program index = {programIndex}).");
+                storage = context.Device.FileSystem.GetRomFs(_pid).AsStorage(true);
+            }
+            else
+            {
+                ulong programId = process.Identity.ApplicationId + programIndex;
+
+                if (!context.Device.FileSystem.TryGetProgramRomFs(programId, out Stream programRomFs))
+                {
+                    Logger.Error?.Print(LogClass.ServiceFs, $"RomFS for program index {programIndex} ({programId:x16}) is not available.");
+
+                    return ResultCode.PathDoesNotExist;
+                }
+
+                Logger.Info?.Print(LogClass.ServiceFs, $"Opening RomFS for program index {programIndex} ({programId:x16}).");
+
+                context.Device.FileSystem.ModLoader.CollectMods(
+                    [programId],
+                    ModLoader.GetModsBasePath(),
+                    ModLoader.GetSdModsBasePath());
+
+                storage = context.Device.FileSystem.ModLoader.ApplyRomFsMods(programId, programRomFs.AsStorage(true));
             }
 
-            LibHac.Fs.IStorage storage = context.Device.FileSystem.GetRomFs(_pid).AsStorage(true);
             using SharedRef<LibHac.Fs.IStorage> sharedStorage = new(storage);
             using SharedRef<IStorage> sfStorage = new(new StorageInterfaceAdapter(ref sharedStorage.Ref));
 
